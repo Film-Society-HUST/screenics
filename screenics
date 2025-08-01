@@ -1,12 +1,28 @@
-#!/usr/bin/env fish
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 
-# --- 帮助说明函数 ---
-function show_help
-    echo "
+import argparse
+import sys
+import re
+import subprocess
+import uuid
+import shutil
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+
+# --- 全局默认设置 ---
+ORGANIZER_NAME = "华科影协"
+DEFAULT_LOCATION = "博士生之家"
+GITHUB_REPO = "Film-Society-HUST/screenics"
+TIMEZONE = ZoneInfo("Asia/Shanghai")
+
+def show_help_string():
+    """返回帮助说明文本"""
+    return """
 =============================================================================
 
 功能描述:
-  为华中科技电影放映活动生成 .ics 日历文件。支持两种模式：
+  为华中科技大学电影放映活动生成 .ics 日历文件。支持两种模式：
   1. 命令行模式: 通过参数快速生成文件。
   2. 交互模式: 无参数运行时，引导用户输入信息。
 
@@ -19,194 +35,10 @@ function show_help
 命令行模式用法:
 -----------------------------------------------------------------------------
   语法:
-    screenics \"电影名称\" 开始时间 电影时长 周几 [\"可选地址\"] [\"合作组织\"]
+    screenics "电影名称" 开始时间 电影时长 周几 [--location "可选地址"]
 
   参数说明:
-  1. 电影名称:   字符串。如果名称包含空格，请务必使用双引号 \"\" 括起来。
-  2. 开始时间:   字符串, 格式为 HH:MM (例如 19:30)。 
-  3. 电影时长:   数字, 单位为分钟 (例如 125)。
-  4. 周几:       一个 1-7 的整数 (1=周一, 2=周二, ..., 7=周日)。
-  5. 可选地址:   (可选) 字符串。放映地点。默认为博士生之家
-  6. 合作组织:   (可选) 字符串。将作为联合组织方显示。
-
-  示例:
-  screenics \"你的名字。\" 19:00 107 5 
-  screenics \"深海\" 19:30 112 6 \"大学生活动中心\" \"动漫协会\"
-
------------------------------------------------------------------------------
-交互模式用法:
------------------------------------------------------------------------------
-  直接运行脚本，不带任何参数，然后根据提示操作。
-=============================================================================
-"
-end
-
-# --- 默认设置 (全局变量) ---
-set -g ORGANIZER_NAME 华科影协
-set -g LOCATION 博士生之家
-
-# --- 交互模式函数 ---
-function interactive_mode
-    # --- 使用局部变量 (小写) 是最佳实践 ---
-    set -l movie_title
-    set -l start_time
-    set -l duration_min
-    set -l weekday_num
-    set -l custom_location
-    set -l partner_org
-
-    while true
-        read -P "1. 请输入电影名称: " movie_title
-        if not test -z "$movie_title"
-            break
-        end
-        echo "错误：电影名称不能为空。" >&2
-    end
-
-    while true
-        read -P "2. 请输入开始时间 (格式 HH:MM, 例如 19:30): " start_time 
-        # --- 验证 HH:MM 格式 ---
-        if string match -q -r '^[0-2][0-9]:[0-5][0-9]$' -- "$start_time"
-            set -l hour (string split ':' -- "$start_time")[1]
-            if test "$hour" -lt 24
-                break
-            end
-        end
-        echo "错误：格式无效，请输入有效的24小时制时间 (HH:MM)。" >&2
-    end
-
-    while true
-        read -P "3. 请输入电影时长 (分钟): " duration_min
-        if string match -q -r '^[1-9][0-9]*$' -- "$duration_min"
-            break
-        end
-        echo "错误：格式无效，请输入一个正整数。" >&2
-    end
-
-    while true
-        read -P "4. 请选择周几 (1=周一, ..., 7=周日): " weekday_num
-        if contains -- "$weekday_num" 1 2 3 4 5 6 7
-            break
-        end
-        echo "错误：输入无效，请输入 1-7 的整数。" >&2
-    end
-    
-    read -P "5. (可选) 请输入放映地点 (留空使用默认值: $LOCATION): " custom_location
-    read -P "6. (可选) 请输入合作组织 (留空则无): " partner_org
-    
-    # 返回一个包含所有变量的列表，以便主脚本接收
-    return "$movie_title" "$start_time" "$duration_min" "$weekday_num" "$custom_location" "$partner_org" # <--- 修正: 返回所有6个变量
-end
-
-# =============================================================================
-# --- 主逻辑开始 ---
-# =============================================================================
-
-# --- 模式选择与参数处理 ---
-if test (count $argv) -eq 0
-    # --- 交互模式 ---
-    set user_input (interactive_mode)
-    set MOVIE_TITLE $user_input[1]
-    set START_TIME $user_input[2]
-    set DURATION_MIN $user_input[3]
-    set WEEKDAY_NUM $user_input[4]
-    set custom_location $user_input[5]
-    set partner_org $user_input[6]
-
-    if not test -z "$custom_location"
-        set LOCATION $custom_location
-    end
-    if not test -z "$partner_org"
-        set ORGANIZER_NAME "$ORGANIZER_NAME & $partner_org"
-    end
-else
-    # --- 命令行模式 ---
-    if test "$argv[1]" = --help -o "$argv[1]" = -h
-        show_help
-        exit 0
-    end
-
-    # 修正: 检查参数数量是否在4到6个之间
-    if test (count $argv) -lt 4 -o (count $argv) -gt 6
-        set script_name (basename (status --current-filename))
-        echo "错误：需要 4 到 6 个参数，但收到了 "(count $argv)" 个。" >&2
-        echo "用法: $script_name \"电影名称\" 开始时间(HH:MM) 时长 周几 [\"地址\"] [\"合作组织\"]" >&2
-        echo "运行 '$script_name --help' 查看完整说明。" >&2
-        exit 1
-    end
-    
-    set MOVIE_TITLE $argv[1]
-    set START_TIME $argv[2]
-    set DURATION_MIN $argv[3]
-    set WEEKDAY_NUM $argv[4]
-
-    if test (count $argv) -ge 5
-        set LOCATION $argv[5]
-    end
-    if test (count $argv) -ge 6
-        set ORGANIZER_NAME "$ORGANIZER_NAME & $argv[6]"
-    end
-end
-
-# --- 数据验证与处理 (共享逻辑) ---
-# 验证时间格式 (仅针对命令行模式，交互模式已验证)
-if not string match -q -r '^[0-2][0-9]:[0-5][0-9]$' -- "$START_TIME"
-    echo "错误：开始时间 '$START_TIME' 格式无效，请使用 HH:MM 格式。" >&2
-    exit 1
-end
-
-# 验证星期参数
-set DAY_NAME ""
-switch $WEEKDAY_NUM
-    case 1
- set DAY_NAME monday
-    case 2
- set DAY_NAME tuesday
-    case 3
- set DAY_NAME wednesday
-    case 4
- set DAY_NAME thursday
-    case 5
- set DAY_NAME friday
-    case 6
- set DAY_NAME saturday
-    case 7
- set DAY_NAME sunday
-    case '*'
-
-        echo "错误: 星期参数 '$WEEKDAY_NUM' 无效。请使用 1-7 之间的数字。" >&2 
-        exit 1
-end
-
-# 计算日期和时间
-set EVENT_DATE (date -d "$DAY_NAME" +%Y%m%d)
-# GNU date 可以直接处理 'HH:MM' 格式
-set END_TIMESTAMP (date -d "$EVENT_DATE $START_TIME + $DURATION_MIN minutes" +%Y%m%dT%H%M%S)
-
-# --- 文件生成 ---
-set UID (date +%s)-(random)@hust.film.association
-set DTSTAMP (date -u +%Y%m%dT%H%M%SZ)
-set SAFE_TITLE (echo $MOVIE_TITLE | tr -d ' /\\:*?"<>|')
-set FILENAME "$LOCATION放映_($SAFE_TITLE)_($EVENT_DATE).ics"
-
-# 准备用于ICS文件的时间格式 (移除冒号)
-set ICS_START_TIME (string replace ':' '' -- $START_TIME)
-
-# 生成 ICS 文件
-echo "BEGIN:VCALENDAR
-VERSION:2.0
-PRODID:-//hust-film-script/NONSGML v1.0//EN
-CALSCALE:GREGORIAN
-BEGIN:VEVENT
-UID:$UID
-DTSTAMP:$DTSTAMP
-DTSTART;TZID=Asia/Shanghai:$EVENT_DATE"T"$ICS_START_TIME"00
-DTEND
-TZID=Asia/Shanghai:$END_TIMESTAMP
-SUMMARY:$ORGANIZER_NAME 放映：$MOVIE_TITLE
-DESCRIPTION:电影：$MOVIE_TITLE\\n放映时间：$START_TIME ($DURATION_MIN 分钟)
-LOCATION:$LOCATION
-END:VEVENT
-END:VCALENDAR" > $FILENAME
-
-echo "成功创建日历文件: $FILENAME"
+  1. movie_title:  字符串。如果名称包含空格，请务必使用双引号 "" 括起来。
+  2. start_time:   字符串, 格式为 HH:MM (例如 19:30)。
+  3. duration_min: 数字, 单位为分钟 (例如 125)。
+ 
