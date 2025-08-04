@@ -41,4 +41,194 @@ def show_help_string():
   1. movie_title:  字符串。如果名称包含空格，请务必使用双引号 "" 括起来。
   2. start_time:   字符串, 格式为 HH:MM (例如 19:30)。
   3. duration_min: 数字, 单位为分钟 (例如 125)。
- 
+  4. weekday_num:  一个 1-7 的整数 (1=周一, 2=周二, ..., 7=周日)。
+  5. --location:   (可选) 字符串。放映地点。默认为“博士生之家”。
+
+  示例:
+    screenics "你的名字。" 19:00 107 5
+    screenics "深海" 19:30 112 6 --location "大学生活动中心"
+
+-----------------------------------------------------------------------------
+交互模式用法:
+-----------------------------------------------------------------------------
+  直接运行脚本，不带任何参数，然后根据提示操作。
+=============================================================================
+"""
+
+def validate_time_format(time_str):
+    """验证 HH:MM 格式的时间字符串"""
+    if not re.match(r'^[0-2][0-9]:[0-5][0-9]$', time_str):
+        return False
+    hour, minute = map(int, time_str.split(':'))
+    if hour < 24 and minute < 60:
+        return True
+    return False
+
+def interactive_mode():
+    """引导用户输入信息的交互模式"""
+    print("--- 进入交互模式 ---")
+    
+    movie_title = ""
+    while not movie_title:
+        movie_title = input("1. 请输入电影名称: ")
+        if not movie_title:
+            print("错误：电影名称不能为空。", file=sys.stderr)
+
+    start_time = ""
+    while not validate_time_format(start_time):
+        start_time = input("2. 请输入开始时间 (格式 HH:MM, 例如 19:30): ")
+        if not validate_time_format(start_time):
+            print("错误：格式无效，请输入有效的24小时制时间 (HH:MM)。", file=sys.stderr)
+
+    duration_min = ""
+    while not duration_min.isdigit() or int(duration_min) <= 0:
+        duration_min = input("3. 请输入电影时长 (分钟): ")
+        if not duration_min.isdigit() or int(duration_min) <= 0:
+            print("错误：格式无效，请输入一个正整数。", file=sys.stderr)
+    duration_min = int(duration_min)
+
+    weekday_num = 0
+    while weekday_num not in range(1, 8):
+        try:
+            weekday_num = int(input("4. 请选择周几 (1=周一, ..., 7=周日): "))
+            if weekday_num not in range(1, 8):
+                 print("错误：输入无效，请输入 1-7 的整数。", file=sys.stderr)
+        except ValueError:
+            print("错误：输入无效，请输入 1-7 的整数。", file=sys.stderr)
+            
+    location = input(f"5. (可选) 请输入放映地点 (留空使用默认值: {DEFAULT_LOCATION}): ")
+    if not location:
+        location = DEFAULT_LOCATION
+
+    # 使用 argparse.Namespace 对象来统一数据结构
+    return argparse.Namespace(
+        movie_title=movie_title,
+        start_time=start_time,
+        duration_min=duration_min,
+        weekday_num=weekday_num,
+        location=location
+    )
+
+
+def main():
+    """主逻辑函数"""
+    parser = argparse.ArgumentParser(
+        description="为华科影协生成放映活动的 .ics 日历文件。",
+        epilog=show_help_string(),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        add_help=False # 自定义帮助信息
+    )
+    
+    # 添加一个自定义的帮助参数
+    parser.add_argument(
+        '-h', '--help', action='help', default=argparse.SUPPRESS,
+        help='显示此帮助信息并退出'
+    )
+
+    # 命令行模式参数
+    parser.add_argument('movie_title', nargs='?', help='电影名称')
+    parser.add_argument('start_time', nargs='?', help='开始时间 (HH:MM)')
+    parser.add_argument('duration_min', nargs='?', type=int, help='电影时长 (分钟)')
+    parser.add_argument('weekday_num', nargs='?', type=int, choices=range(1, 8), help='周几 (1-7)')
+    parser.add_argument('--location', default=DEFAULT_LOCATION, help=f'放映地点 (默认为: {DEFAULT_LOCATION})')
+
+    # 如果没有提供任何命令行参数 (除了脚本名)，则进入交互模式
+    if len(sys.argv) == 1:
+        args = interactive_mode()
+    else:
+        args = parser.parse_args()
+        # 验证命令行参数完整性
+        if not all([args.movie_title, args.start_time, args.duration_min, args.weekday_num is not None]):
+            print("错误：命令行模式需要提供 电影名称, 开始时间, 时长, 周几 这四个参数。", file=sys.stderr)
+            print("运行 'screenics --help' 查看完整说明。", file=sys.stderr)
+            sys.exit(1)
+        # 验证命令行参数格式
+        if not validate_time_format(args.start_time):
+            print(f"错误：开始时间 '{args.start_time}' 格式无效，请使用 HH:MM 格式。", file=sys.stderr)
+            sys.exit(1)
+        if args.duration_min <= 0:
+             print(f"错误：电影时长 '{args.duration_min}' 无效，请输入一个正整数。", file=sys.stderr)
+             sys.exit(1)
+
+    # --- 数据处理与时间计算 (共享逻辑) ---
+    
+    # 1. 计算事件日期
+    today_in_shanghai = datetime.now(TIMEZONE)
+    today_weekday = today_in_shanghai.isoweekday() # Monday is 1 and Sunday is 7
+    days_to_add = (args.weekday_num - today_weekday + 7) % 7
+    event_date_obj = today_in_shanghai + timedelta(days=days_to_add)
+
+    # 2. 计算开始和结束时间
+    start_hour, start_minute = map(int, args.start_time.split(':'))
+    dtstart = event_date_obj.replace(
+        hour=start_hour, minute=start_minute, second=0, microsecond=0
+    )
+    dtend = dtstart + timedelta(minutes=args.duration_min)
+
+    # 3. 准备 ICS 所需的格式
+    event_date_str = dtstart.strftime('%Y%m%d')
+    dtstart_str = dtstart.strftime('%Y%m%dT%H%M%S')
+    dtend_str = dtend.strftime('%Y%m%dT%H%M%S')
+    dtstamp_str = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    uid = f"{uuid.uuid4()}@hust.film.society"
+
+    # --- 文件生成 ---
+    filename = f"{ORGANIZER_NAME}放映_{args.movie_title}_{event_date_str}.ics"
+    
+    ics_content = f"""BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//hust-film-script/NONSGML v1.0//EN
+CALSCALE:GREGORIAN
+BEGIN:VEVENT
+UID:{uid}
+DTSTAMP:{dtstamp_str}
+DTSTART;TZID={TIMEZONE.key}:{dtstart_str}
+DTEND;TZID={TIMEZONE.key}:{dtend_str}
+SUMMARY:{ORGANIZER_NAME}放映：{args.movie_title}
+LOCATION:{args.location}
+END:VEVENT
+END:VCALENDAR
+"""
+
+    try:
+        with open(filename, 'w', encoding='utf-8') as f:
+            f.write(ics_content)
+        print(f"成功创建日历文件: {filename}")
+    except IOError as e:
+        print(f"错误：无法写入文件 {filename}。原因: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    # --- 上传到 GitHub Release ---
+    if not shutil.which("gh"):
+        print("\n警告: 未找到 'gh' 命令, 跳过上传步骤。", file=sys.stderr)
+        print("请安装 GitHub CLI (https://cli.github.com/) 并使用 'gh auth login' 登录后重试。", file=sys.stderr)
+        sys.exit(0)
+
+    print("正在尝试上传文件到 GitHub Release...")
+    command = [
+        "gh", "release", "upload", "icsArchive", filename,
+        "--repo", GITHUB_REPO,
+        "--clobber"
+    ]
+    
+    try:
+        # 使用 check=True 会在命令失败时抛出异常
+        # 使用 capture_output=True 捕获标准输出和错误
+        result = subprocess.run(
+            command, check=True, capture_output=True, text=True, encoding='utf-8'
+        )
+        print("文件上传成功！")
+        if result.stdout:
+            print("GitHub CLI 输出:", result.stdout)
+    except FileNotFoundError:
+        # 这个异常理论上不会发生，因为前面已经用 shutil.which 检查过了
+         print("错误: 'gh' 命令不存在，无法上传。", file=sys.stderr)
+    except subprocess.CalledProcessError as e:
+        print("\n错误: 'gh' 命令执行失败。", file=sys.stderr)
+        print(f"返回码: {e.returncode}", file=sys.stderr)
+        print(f"标准错误输出:\n{e.stderr}", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
